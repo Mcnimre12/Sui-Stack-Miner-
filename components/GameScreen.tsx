@@ -18,106 +18,93 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
   });
 
   const gameAreaRef = useRef<HTMLDivElement>(null);
-  const animationFrameId = useRef<number | null>(null);
+  const raf = useRef<number | null>(null);
 
-  // Generate non-overlapping items
+  /** Place items (no overlap) */
   const generateItems = useCallback(() => {
     const area = gameAreaRef.current;
     if (!area) return;
 
-    const newItems: PlacedItem[] = [];
-    const maxAttempts = 500;
-
+    const placed: PlacedItem[] = [];
+    const maxAttempts = 600;
     let id = 0;
+
     for (let i = 0; i < TOTAL_ITEMS; i++) {
-      let placed = false;
-      let attempts = 0;
-
-      while (!placed && attempts++ < maxAttempts) {
+      let ok = false, tries = 0;
+      while (!ok && tries++ < maxAttempts) {
         const t = ITEM_TYPES[Math.floor(Math.random() * ITEM_TYPES.length)];
-        const margin = 6; // % margin to keep away from edges
+        const margin = 6;
         const x = margin + Math.random() * (100 - margin * 2);
-        const y = HOOK_CONFIG.pivotY + 10 + Math.random() * (100 - (HOOK_CONFIG.pivotY + 15)); // deeper than hook
+        // để sâu hơn pivot, giảm va chạm sớm với dây
+        const y = HOOK_CONFIG.pivotY + 12 + Math.random() * (100 - (HOOK_CONFIG.pivotY + 18));
+        const cand: PlacedItem = { ...t, id: id++, x, y };
 
-        const candidate: PlacedItem = { ...t, id: id++, x, y };
-
-        const overlap = newItems.some((it) => {
-          const ax = (candidate.x / 100) * area.clientWidth;
-          const ay = (candidate.y / 100) * area.clientHeight;
-          const bx = (it.x / 100) * area.clientWidth;
-          const by = (it.y / 100) * area.clientHeight;
-          const dist = Math.hypot(ax - bx, ay - by);
-          return dist < (candidate.size + it.size) * 0.55; // allow a little gap
+        const overlap = placed.some(p => {
+          const ax = (cand.x / 100) * area.clientWidth;
+          const ay = (cand.y / 100) * area.clientHeight;
+          const bx = (p.x / 100) * area.clientWidth;
+          const by = (p.y / 100) * area.clientHeight;
+          return Math.hypot(ax - bx, ay - by) < (cand.size + p.size) * 0.55;
         });
 
-        if (!overlap) {
-          newItems.push(candidate);
-          placed = true;
-        }
+        if (!overlap) { placed.push(cand); ok = true; }
       }
     }
 
-    setItems(newItems);
+    setItems(placed);
   }, []);
 
-  useEffect(() => {
-    generateItems();
-  }, [generateItems]);
+  useEffect(() => { generateItems(); }, [generateItems]);
 
-  // Timer
+  /** Timer */
   useEffect(() => {
     if (timeLeft <= 0) {
-      if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
+      if (raf.current) cancelAnimationFrame(raf.current);
       onEndGame(score);
       return;
     }
-    const t = setInterval(() => setTimeLeft((s) => s - 1), 1000);
+    const t = setInterval(() => setTimeLeft(s => s - 1), 1000);
     return () => clearInterval(t);
   }, [timeLeft, onEndGame, score]);
 
-  // Shoot
+  /** Shoot */
   const shootHook = useCallback(() => {
     if (hook.status === 'swinging') {
-      setHook((prev) => ({ ...prev, status: 'extending' }));
+      setHook(h => ({ ...h, status: 'extending' }));
     }
   }, [hook.status]);
 
-  // Keyboard
+  /** Keyboard */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === 'Space') {
-        e.preventDefault();
-        shootHook();
-      }
+      if (e.code === 'Space') { e.preventDefault(); shootHook(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [shootHook]);
 
-  // Scoring transition
+  /** Scoring transition */
   useEffect(() => {
     if (hook.status === 'scoring' && hook.caughtItem) {
       const item = hook.caughtItem;
-      setScore((s) => s + item.points);
-      setItems((arr) => arr.filter((it) => it.id !== item.id));
-      setHook((h) => ({ ...h, status: 'swinging', caughtItem: null }));
+      setScore(s => s + item.points);
+      setItems(arr => arr.filter(it => it.id !== item.id));
+      setHook(h => ({ ...h, status: 'swinging', caughtItem: null }));
     }
   }, [hook]);
 
-  // Game loop
+  /** Game loop (physics) */
   useEffect(() => {
-    const loop = () => {
-      setHook((prev) => {
+    const tick = () => {
+      setHook(prev => {
         if (prev.status === 'scoring') return prev;
 
         const next: HookState = { ...prev };
         const area = gameAreaRef.current;
         if (!area) return prev;
 
-        const pivotPx = {
-          x: (HOOK_CONFIG.pivotX / 100) * area.clientWidth,
-          y: (HOOK_CONFIG.pivotY / 100) * area.clientHeight,
-        };
+        const pivotX = (HOOK_CONFIG.pivotX / 100) * area.clientWidth;
+        const pivotY = (HOOK_CONFIG.pivotY / 100) * area.clientHeight;
 
         if (next.status === 'swinging') {
           next.angle = HOOK_CONFIG.swingAngleRange * Math.sin(Date.now() * HOOK_CONFIG.swingSpeed);
@@ -125,10 +112,10 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
           next.length += HOOK_CONFIG.extendSpeed;
 
           const ang = (next.angle * Math.PI) / 180;
-          const tipX = pivotPx.x + next.length * Math.sin(ang);
-          const tipY = pivotPx.y + next.length * Math.cos(ang);
+          const tipX = pivotX + next.length * Math.sin(ang);
+          const tipY = pivotY + next.length * Math.cos(ang);
 
-          // Collision
+          // collision
           for (const it of items) {
             const ix = (it.x / 100) * area.clientWidth;
             const iy = (it.y / 100) * area.clientHeight;
@@ -141,21 +128,19 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
             }
           }
 
-          // Bounds
+          // bounds
           if (
-            tipX < 0 ||
-            tipX > area.clientWidth ||
+            tipX < 0 || tipX > area.clientWidth ||
             tipY > area.clientHeight ||
             next.length > HOOK_CONFIG.maxLength
           ) {
             next.status = 'retracting';
           }
         } else if (next.status === 'retracting') {
-          const retractSpeed = next.caughtItem
+          const retract = next.caughtItem
             ? Math.max(1, HOOK_CONFIG.baseRetractSpeed - next.caughtItem.points / 10)
             : HOOK_CONFIG.baseRetractSpeed * 1.5;
-
-          next.length -= retractSpeed;
+          next.length -= retract;
 
           if (next.length <= HOOK_CONFIG.baseLength) {
             next.length = HOOK_CONFIG.baseLength;
@@ -166,17 +151,16 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
         return next;
       });
 
-      animationFrameId.current = requestAnimationFrame(loop);
+      raf.current = requestAnimationFrame(tick);
     };
 
-    animationFrameId.current = requestAnimationFrame(loop);
-    return () => {
-      if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
-    };
+    raf.current = requestAnimationFrame(tick);
+    return () => { if (raf.current) cancelAnimationFrame(raf.current); };
   }, [items]);
 
   return (
-    <div ref={gameAreaRef} className="w-full h-full relative text-white z-10">
+    <div ref={gameAreaRef} className="w-full h-full relative text-white">
+
       {/* Top Bar */}
       <div
         className="absolute top-0 left-0 w-full p-4 flex justify-between text-2xl z-20 bg-black/20"
@@ -186,7 +170,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
         <div>Score: <span className="text-yellow-300">{score}</span></div>
       </div>
 
-      {/* Miner (pivot visualization) */}
+      {/* Miner (pivot visual) */}
       <div
         className="absolute top-0 w-24 h-24 bg-gray-700 border-4 border-black/60 rounded-b-2xl"
         style={{
@@ -197,7 +181,8 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
         <div className="w-8 h-8 bg-yellow-500 rounded-full absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
       </div>
 
-      {/* Hook Group: rope + pickaxe + caught item */}
+      {/* === HOOK GROUP (ONLY RENDER HERE) ===
+          Dây, cuốc, và item bị gắp đều trong cùng 1 nhóm xoay/thu kéo */}
       <div
         className="absolute z-30"
         style={{
@@ -220,7 +205,8 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
             transform: 'translateX(-50%)',
           }}
         />
-        {/* Pickaxe at rope tip */}
+
+        {/* Pickaxe at rope tip (rotate head downward) */}
         <div
           className="absolute text-3xl select-none"
           style={{
@@ -253,7 +239,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
         )}
       </div>
 
-      {/* Items */}
+      {/* Items (ẩn item đang bị kéo) */}
       {items.map((item) => (
         <div
           key={item.id}
