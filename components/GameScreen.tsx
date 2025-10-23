@@ -7,10 +7,10 @@ interface GameScreenProps {
 }
 
 /**
- * CƠ CHẾ MỚI (visual-only, đơn giản, CHỈ 1 dây duy nhất):
- * - 1 nhóm duy nhất xoay/thu: RopeGroup (dây + cuốc + item bị gắp).
- * - Không dùng hookTipPosition, không có "Hook Line" cũ, không render item bị gắp ở ngoài.
- * - Va chạm = tip của dây chạm item -> gán caughtItem -> retract -> scoring.
+ * Gameplay giữ nguyên:
+ * - Swing → Space bắn dây → Extend → chạm item → Retract → về pivot → Scoring (+điểm, remove item) → Swing.
+ * Thiết kế mới: chỉ 1 "RopeGroup" (dây + ⛏ + item bị gắp) = source of truth.
+ * Không dùng hookTipPosition, không render item bị gắp ở ngoài → không còn line/đầu dây thứ 2.
  */
 const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
   const [timeLeft, setTimeLeft] = useState(GAME_DURATION_SECONDS);
@@ -31,9 +31,9 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
     const area = areaRef.current;
     if (!area) return;
 
-    const out: PlacedItem[] = [];
-    let id = 0;
+    const placed: PlacedItem[] = [];
     const MAX_TRIES = 600;
+    let id = 0;
 
     for (let i = 0; i < TOTAL_ITEMS; i++) {
       let ok = false, tries = 0;
@@ -44,7 +44,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
         const y = HOOK_CONFIG.pivotY + 12 + Math.random() * (100 - (HOOK_CONFIG.pivotY + 18));
         const cand: PlacedItem = { ...t, id: id++, x, y };
 
-        const overlap = out.some((p) => {
+        const overlap = placed.some((p) => {
           const ax = (cand.x / 100) * area.clientWidth;
           const ay = (cand.y / 100) * area.clientHeight;
           const bx = (p.x / 100) * area.clientWidth;
@@ -52,13 +52,11 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
           return Math.hypot(ax - bx, ay - by) < (cand.size + p.size) * 0.55;
         });
 
-        if (!overlap) {
-          out.push(cand);
-          ok = true;
-        }
+        if (!overlap) { placed.push(cand); ok = true; }
       }
     }
-    setItems(out);
+
+    setItems(placed);
   }, []);
 
   useEffect(() => { generateItems(); }, [generateItems]);
@@ -88,7 +86,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
     return () => window.removeEventListener('keydown', onKey);
   }, [shoot]);
 
-  /** Scoring */
+  /** Scoring transition */
   useEffect(() => {
     if (hook.status === 'scoring' && hook.caughtItem) {
       const item = hook.caughtItem;
@@ -98,7 +96,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
     }
   }, [hook]);
 
-  /** Game loop (single visual rope group) */
+  /** Game loop (unified rope) */
   useEffect(() => {
     const step = () => {
       setHook((prev) => {
@@ -121,7 +119,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
           const tipX = pivotX + next.length * Math.sin(ang);
           const tipY = pivotY + next.length * Math.cos(ang);
 
-          // collision (only once)
+          // collision — single source; no ghost
           for (const it of items) {
             const ix = (it.x / 100) * area.clientWidth;
             const iy = (it.y / 100) * area.clientHeight;
@@ -134,7 +132,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
             }
           }
 
-          // bounds -> retract
+          // bounds → retract
           if (
             tipX < 0 || tipX > area.clientWidth ||
             tipY > area.clientHeight ||
@@ -165,7 +163,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
   }, [items]);
 
   return (
-    <div ref={areaRef} className="w-full h-full relative text-white">
+    <div ref={areaRef} className="w-full h-full relative text-white z-10">
       {/* HUD */}
       <div
         className="absolute top-0 left-0 w-full p-4 flex justify-between text-2xl z-20 bg-black/20"
@@ -186,7 +184,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
         <div className="w-8 h-8 bg-yellow-500 rounded-full absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
       </div>
 
-      {/* ======= ONLY ROPE GROUP (the single source of truth) ======= */}
+      {/* === ONLY ROPE GROUP (single source of truth) === */}
       <div
         className="absolute z-30"
         style={{
@@ -222,7 +220,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
           ⛏️
         </div>
 
-        {/* Caught item (attached to tip) */}
+        {/* Caught item attached to tip */}
         {hook.caughtItem && (
           <div
             className="absolute z-30"
@@ -242,7 +240,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
           </div>
         )}
       </div>
-      {/* ======= END ONLY ROPE GROUP ======= */}
+      {/* === END ONLY ROPE GROUP === */}
 
       {/* Items (hide the one being carried) */}
       {items.map((it) => (
