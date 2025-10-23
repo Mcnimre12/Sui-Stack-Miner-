@@ -10,195 +10,194 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
   const [timeLeft, setTimeLeft] = useState(GAME_DURATION_SECONDS);
   const [score, setScore] = useState(0);
   const [items, setItems] = useState<PlacedItem[]>([]);
-  const [hook, setHook] = useState<HookState>({ status: 'swinging', angle: 0, length: HOOK_CONFIG.baseLength, caughtItem: null });
-  
-  const gameAreaRef = useRef<HTMLDivElement>(null);
-  const animationFrameId = useRef<number>();
+  const [hook, setHook] = useState<HookState>({
+    status: 'swinging',
+    angle: 0,
+    length: HOOK_CONFIG.baseLength,
+    caughtItem: null,
+  });
 
+  const gameAreaRef = useRef<HTMLDivElement>(null);
+  const animationFrameId = useRef<number | null>(null);
+
+  // Generate non-overlapping items
   const generateItems = useCallback(() => {
+    const area = gameAreaRef.current;
+    if (!area) return;
+
     const newItems: PlacedItem[] = [];
+    const maxAttempts = 500;
+
+    let id = 0;
     for (let i = 0; i < TOTAL_ITEMS; i++) {
-      const itemType = ITEM_TYPES[Math.floor(Math.random() * ITEM_TYPES.length)];
       let placed = false;
       let attempts = 0;
-      while(!placed && attempts < 100) { // Add attempt limit to prevent infinite loops
-        attempts++;
-        const newItem: PlacedItem = {
-          ...itemType,
-          id: i,
-          x: 10 + Math.random() * 80, // % from left
-          y: 40 + Math.random() * 55, // % from top
-        };
-        // Simple overlap check
-        const overlap = newItems.some(existingItem => {
-            const dx = (newItem.x/100 * (gameAreaRef.current?.clientWidth ?? 800)) - (existingItem.x/100 * (gameAreaRef.current?.clientWidth ?? 800));
-            const dy = (newItem.y/100 * (gameAreaRef.current?.clientHeight ?? 600)) - (existingItem.y/100 * (gameAreaRef.current?.clientHeight ?? 600));
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            return distance < (newItem.size + existingItem.size) / 2;
+
+      while (!placed && attempts++ < maxAttempts) {
+        const t = ITEM_TYPES[Math.floor(Math.random() * ITEM_TYPES.length)];
+        const margin = 6; // % margin to keep away from edges
+        const x = margin + Math.random() * (100 - margin * 2);
+        const y = HOOK_CONFIG.pivotY + 10 + Math.random() * (100 - (HOOK_CONFIG.pivotY + 15)); // deeper than hook
+
+        const candidate: PlacedItem = { ...t, id: id++, x, y };
+
+        const overlap = newItems.some((it) => {
+          const ax = (candidate.x / 100) * area.clientWidth;
+          const ay = (candidate.y / 100) * area.clientHeight;
+          const bx = (it.x / 100) * area.clientWidth;
+          const by = (it.y / 100) * area.clientHeight;
+          const dist = Math.hypot(ax - bx, ay - by);
+          return dist < (candidate.size + it.size) * 0.55; // allow a little gap
         });
+
         if (!overlap) {
-            newItems.push(newItem);
-            placed = true;
+          newItems.push(candidate);
+          placed = true;
         }
       }
     }
+
     setItems(newItems);
   }, []);
-  
+
   useEffect(() => {
-    // Generate items once the game area is mounted
-    if (gameAreaRef.current) {
-        generateItems();
-    }
+    generateItems();
   }, [generateItems]);
 
+  // Timer
   useEffect(() => {
     if (timeLeft <= 0) {
       if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
       onEndGame(score);
       return;
     }
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => prev - 1);
-    }, 1000);
-    return () => clearInterval(timer);
+    const t = setInterval(() => setTimeLeft((s) => s - 1), 1000);
+    return () => clearInterval(t);
   }, [timeLeft, onEndGame, score]);
 
+  // Shoot
   const shootHook = useCallback(() => {
     if (hook.status === 'swinging') {
       setHook((prev) => ({ ...prev, status: 'extending' }));
     }
   }, [hook.status]);
 
+  // Keyboard
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const onKey = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
         e.preventDefault();
         shootHook();
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, [shootHook]);
 
-  // This effect handles the 'scoring' state transition.
-  // When the hook enters 'scoring' state, we award points, remove the item, and reset the hook to 'swinging'.
+  // Scoring transition
   useEffect(() => {
     if (hook.status === 'scoring' && hook.caughtItem) {
       const item = hook.caughtItem;
-      // Award points and remove the item from the playfield
-      setScore(s => s + item.points);
-      setItems(its => its.filter(it => it.id !== item.id));
-      
-      // Immediately transition the hook back to swinging, with the item removed.
-      setHook(h => ({
-        ...h,
-        status: 'swinging',
-        caughtItem: null,
-      }));
+      setScore((s) => s + item.points);
+      setItems((arr) => arr.filter((it) => it.id !== item.id));
+      setHook((h) => ({ ...h, status: 'swinging', caughtItem: null }));
     }
   }, [hook]);
 
-
-  // Main Game Loop
+  // Game loop
   useEffect(() => {
-    const gameLogic = () => {
-      setHook((prevHook) => {
-        // Do not update visuals if we are in the middle of scoring
-        if (prevHook.status === 'scoring') return prevHook;
+    const loop = () => {
+      setHook((prev) => {
+        if (prev.status === 'scoring') return prev;
 
-        const newHook = { ...prevHook };
-        const gameArea = gameAreaRef.current;
-        if (!gameArea) return prevHook;
-  
+        const next: HookState = { ...prev };
+        const area = gameAreaRef.current;
+        if (!area) return prev;
+
         const pivotPx = {
-          x: gameArea.clientWidth * (HOOK_CONFIG.pivotX / 100),
-          y: gameArea.clientHeight * (HOOK_CONFIG.pivotY / 100),
+          x: (HOOK_CONFIG.pivotX / 100) * area.clientWidth,
+          y: (HOOK_CONFIG.pivotY / 100) * area.clientHeight,
         };
-  
-        if (newHook.status === 'swinging') {
-          newHook.angle = HOOK_CONFIG.swingAngleRange * Math.sin(Date.now() * HOOK_CONFIG.swingSpeed);
-        } else if (newHook.status === 'extending') {
-          newHook.length += HOOK_CONFIG.extendSpeed;
-          const angleRad = newHook.angle * (Math.PI / 180);
-          const tipX = pivotPx.x + newHook.length * Math.sin(angleRad);
-          const tipY = pivotPx.y + newHook.length * Math.cos(angleRad);
-          
-          // Collision detection
-          for (const item of items) {
-              const itemPx = {
-                  x: gameArea.clientWidth * (item.x / 100),
-                  y: gameArea.clientHeight * (item.y / 100)
-              }
-              const distance = Math.sqrt(Math.pow(tipX - itemPx.x, 2) + Math.pow(tipY - itemPx.y, 2));
-              const hitRadius = Math.max(10, item.size * 0.55);
-              if (!newHook.caughtItem && distance < hitRadius) {
-                  newHook.status = 'retracting';
-                  newHook.caughtItem = item;
-                  break;
-              }
-          }
-  
-          // Check bounds
-          if (tipX < 0 || tipX > gameArea.clientWidth || tipY > gameArea.clientHeight || newHook.length > HOOK_CONFIG.maxLength) {
-              newHook.status = 'retracting';
-          }
-        } else if (newHook.status === 'retracting') {
-          const retractSpeed = newHook.caughtItem 
-            ? Math.max(1, HOOK_CONFIG.baseRetractSpeed - newHook.caughtItem.points / 10)
-            : HOOK_CONFIG.baseRetractSpeed * 1.5;
-          newHook.length -= retractSpeed;
-  
-          if (newHook.length <= HOOK_CONFIG.baseLength) {
-            newHook.length = HOOK_CONFIG.baseLength;
-            if (newHook.caughtItem) {
-              newHook.status = 'scoring'; // Go to a temporary state to trigger scoring
-            } else {
-              newHook.status = 'swinging';
+
+        if (next.status === 'swinging') {
+          next.angle = HOOK_CONFIG.swingAngleRange * Math.sin(Date.now() * HOOK_CONFIG.swingSpeed);
+        } else if (next.status === 'extending') {
+          next.length += HOOK_CONFIG.extendSpeed;
+
+          const ang = (next.angle * Math.PI) / 180;
+          const tipX = pivotPx.x + next.length * Math.sin(ang);
+          const tipY = pivotPx.y + next.length * Math.cos(ang);
+
+          // Collision
+          for (const it of items) {
+            const ix = (it.x / 100) * area.clientWidth;
+            const iy = (it.y / 100) * area.clientHeight;
+            const dist = Math.hypot(tipX - ix, tipY - iy);
+            const hitRadius = Math.max(10, it.size * 0.55);
+            if (!next.caughtItem && dist < hitRadius) {
+              next.caughtItem = it;
+              next.status = 'retracting';
+              break;
             }
           }
+
+          // Bounds
+          if (
+            tipX < 0 ||
+            tipX > area.clientWidth ||
+            tipY > area.clientHeight ||
+            next.length > HOOK_CONFIG.maxLength
+          ) {
+            next.status = 'retracting';
+          }
+        } else if (next.status === 'retracting') {
+          const retractSpeed = next.caughtItem
+            ? Math.max(1, HOOK_CONFIG.baseRetractSpeed - next.caughtItem.points / 10)
+            : HOOK_CONFIG.baseRetractSpeed * 1.5;
+
+          next.length -= retractSpeed;
+
+          if (next.length <= HOOK_CONFIG.baseLength) {
+            next.length = HOOK_CONFIG.baseLength;
+            next.status = next.caughtItem ? 'scoring' : 'swinging';
+          }
         }
-        return newHook;
+
+        return next;
       });
+
+      animationFrameId.current = requestAnimationFrame(loop);
     };
 
-    const gameLoop = () => {
-      gameLogic();
-      animationFrameId.current = requestAnimationFrame(gameLoop);
-    };
-    animationFrameId.current = requestAnimationFrame(gameLoop);
-
+    animationFrameId.current = requestAnimationFrame(loop);
     return () => {
-      if (animationFrameId.current) {
-        cancelAnimationFrame(animationFrameId.current);
-      }
+      if (animationFrameId.current) cancelAnimationFrame(animationFrameId.current);
     };
-  }, [items]); // Rerun effect if items array changes to get fresh closure for collision detection
-  
-  const angleRad = hook.angle * (Math.PI / 180);
-  const hookTipPosition = {
-      x: HOOK_CONFIG.pivotX + (hook.length / (gameAreaRef.current?.clientWidth ?? 800) * 100) * Math.sin(angleRad),
-      y: HOOK_CONFIG.pivotY + (hook.length / (gameAreaRef.current?.clientHeight ?? 600) * 100) * Math.cos(angleRad)
-  }
+  }, [items]);
 
   return (
     <div ref={gameAreaRef} className="w-full h-full relative text-white z-10">
       {/* Top Bar */}
-      <div className="absolute top-0 left-0 w-full p-4 flex justify-between text-2xl z-20 bg-black/20" style={{ textShadow: '2px 2px #000' }}>
+      <div
+        className="absolute top-0 left-0 w-full p-4 flex justify-between text-2xl z-20 bg-black/20"
+        style={{ textShadow: '2px 2px #000' }}
+      >
         <div>Time: <span className="text-yellow-300">{timeLeft}</span></div>
         <div>Score: <span className="text-yellow-300">{score}</span></div>
       </div>
-      
-       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center text-white/10 text-sm leading-relaxed p-4 rounded-lg hidden md:block">
-        <p>[SPACE]: Shoot Hook</p>
+
+      {/* Miner (pivot visualization) */}
+      <div
+        className="absolute top-0 w-24 h-24 bg-gray-700 border-4 border-black/60 rounded-b-2xl"
+        style={{
+          left: `calc(${HOOK_CONFIG.pivotX}% - 48px)`,
+          top: `calc(${HOOK_CONFIG.pivotY}% - 48px)`,
+        }}
+      >
+        <div className="w-8 h-8 bg-yellow-500 rounded-full absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
       </div>
 
-      {/* Miner */}
-      <div className="absolute top-0 w-24 h-24 bg-gray-700 border-4 border-gray-900 rounded-b-full" style={{ left: `calc(${HOOK_CONFIG.pivotX}% - 48px)`, top: `calc(${HOOK_CONFIG.pivotY}% - 48px)` }}>
-        <div className="w-8 h-8 bg-yellow-500 rounded-full absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"></div>
-      </div>
-
-      {/* Hook Group: rope and pickaxe tied together */}
+      {/* Hook Group: rope + pickaxe + caught item */}
       <div
         className="absolute z-30"
         style={{
@@ -231,6 +230,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
           }}
         >
           ⛏️
+        </div>
 
         {/* Caught item attached to tip */}
         {hook.caughtItem && (
@@ -244,21 +244,30 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
               transform: 'translate(-50%, -50%)',
             }}
           >
-            <img src={hook.caughtItem.image} alt={hook.caughtItem.name} className="w-full h-full object-contain" />
+            <img
+              src={hook.caughtItem.image}
+              alt={hook.caughtItem.name}
+              className="w-full h-full object-contain"
+            />
           </div>
         )}
       </div>
 
       {/* Items */}
-      {items.map(item => (
-        <div key={item.id} className="absolute"
+      {items.map((item) => (
+        <div
+          key={item.id}
+          className="absolute"
           style={{
-            left: `${item.x}%`, top: `${item.y}%`,
-            width: `${item.size}px`, height: `${item.size}px`,
-            transform: `translate(-50%, -50%)`,
-            visibility: hook.caughtItem?.id === item.id ? 'hidden' : 'visible'
-          }}>
-            <img src={item.image} alt={item.name} className="w-full h-full object-contain" />
+            left: `${item.x}%`,
+            top: `${item.y}%`,
+            width: `${item.size}px`,
+            height: `${item.size}px`,
+            transform: 'translate(-50%, -50%)',
+            visibility: hook.caughtItem?.id === item.id ? 'hidden' : 'visible',
+          }}
+        >
+          <img src={item.image} alt={item.name} className="w-full h-full object-contain" />
         </div>
       ))}
 
@@ -266,7 +275,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
       <button
         onClick={shootHook}
         onTouchStart={(e) => { e.preventDefault(); shootHook(); }}
-        className="absolute bottom-4 right-4 md:hidden w-24 h-24 bg-red-500 rounded-full text-white text-4xl border-b-8 border-red-700 active:border-b-0 active:translate-y-2"
+        className="absolute bottom-4 right-4 md:hidden w-24 h-24 rounded-full bg-red-600 border-b-8 border-red-700 active:border-b-0 active:translate-y-2"
         disabled={hook.status !== 'swinging'}
       >
         GO!
