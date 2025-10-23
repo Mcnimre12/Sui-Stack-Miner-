@@ -6,6 +6,12 @@ interface GameScreenProps {
   onEndGame: (finalScore: number) => void;
 }
 
+/**
+ * CƠ CHẾ MỚI (visual-only, đơn giản, CHỈ 1 dây duy nhất):
+ * - 1 nhóm duy nhất xoay/thu: RopeGroup (dây + cuốc + item bị gắp).
+ * - Không dùng hookTipPosition, không có "Hook Line" cũ, không render item bị gắp ở ngoài.
+ * - Va chạm = tip của dây chạm item -> gán caughtItem -> retract -> scoring.
+ */
 const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
   const [timeLeft, setTimeLeft] = useState(GAME_DURATION_SECONDS);
   const [score, setScore] = useState(0);
@@ -17,29 +23,28 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
     caughtItem: null,
   });
 
-  const gameAreaRef = useRef<HTMLDivElement>(null);
-  const raf = useRef<number | null>(null);
+  const areaRef = useRef<HTMLDivElement>(null);
+  const rafRef = useRef<number | null>(null);
 
   /** Place items (no overlap) */
   const generateItems = useCallback(() => {
-    const area = gameAreaRef.current;
+    const area = areaRef.current;
     if (!area) return;
 
-    const placed: PlacedItem[] = [];
-    const maxAttempts = 600;
+    const out: PlacedItem[] = [];
     let id = 0;
+    const MAX_TRIES = 600;
 
     for (let i = 0; i < TOTAL_ITEMS; i++) {
       let ok = false, tries = 0;
-      while (!ok && tries++ < maxAttempts) {
+      while (!ok && tries++ < MAX_TRIES) {
         const t = ITEM_TYPES[Math.floor(Math.random() * ITEM_TYPES.length)];
         const margin = 6;
         const x = margin + Math.random() * (100 - margin * 2);
-        // để sâu hơn pivot, giảm va chạm sớm với dây
         const y = HOOK_CONFIG.pivotY + 12 + Math.random() * (100 - (HOOK_CONFIG.pivotY + 18));
         const cand: PlacedItem = { ...t, id: id++, x, y };
 
-        const overlap = placed.some(p => {
+        const overlap = out.some((p) => {
           const ax = (cand.x / 100) * area.clientWidth;
           const ay = (cand.y / 100) * area.clientHeight;
           const bx = (p.x / 100) * area.clientWidth;
@@ -47,11 +52,13 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
           return Math.hypot(ax - bx, ay - by) < (cand.size + p.size) * 0.55;
         });
 
-        if (!overlap) { placed.push(cand); ok = true; }
+        if (!overlap) {
+          out.push(cand);
+          ok = true;
+        }
       }
     }
-
-    setItems(placed);
+    setItems(out);
   }, []);
 
   useEffect(() => { generateItems(); }, [generateItems]);
@@ -59,50 +66,48 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
   /** Timer */
   useEffect(() => {
     if (timeLeft <= 0) {
-      if (raf.current) cancelAnimationFrame(raf.current);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
       onEndGame(score);
       return;
     }
-    const t = setInterval(() => setTimeLeft(s => s - 1), 1000);
+    const t = setInterval(() => setTimeLeft((s) => s - 1), 1000);
     return () => clearInterval(t);
   }, [timeLeft, onEndGame, score]);
 
   /** Shoot */
-  const shootHook = useCallback(() => {
-    if (hook.status === 'swinging') {
-      setHook(h => ({ ...h, status: 'extending' }));
-    }
-  }, [hook.status]);
+  const shoot = useCallback(() => {
+    setHook((h) => (h.status === 'swinging' ? { ...h, status: 'extending' } : h));
+  }, []);
 
   /** Keyboard */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === 'Space') { e.preventDefault(); shootHook(); }
+      if (e.code === 'Space') { e.preventDefault(); shoot(); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [shootHook]);
+  }, [shoot]);
 
-  /** Scoring transition */
+  /** Scoring */
   useEffect(() => {
     if (hook.status === 'scoring' && hook.caughtItem) {
       const item = hook.caughtItem;
-      setScore(s => s + item.points);
-      setItems(arr => arr.filter(it => it.id !== item.id));
-      setHook(h => ({ ...h, status: 'swinging', caughtItem: null }));
+      setScore((s) => s + item.points);
+      setItems((arr) => arr.filter((it) => it.id !== item.id));
+      setHook((h) => ({ ...h, status: 'swinging', caughtItem: null }));
     }
   }, [hook]);
 
-  /** Game loop (physics) */
+  /** Game loop (single visual rope group) */
   useEffect(() => {
-    const tick = () => {
-      setHook(prev => {
+    const step = () => {
+      setHook((prev) => {
         if (prev.status === 'scoring') return prev;
 
-        const next: HookState = { ...prev };
-        const area = gameAreaRef.current;
+        const area = areaRef.current;
         if (!area) return prev;
 
+        const next: HookState = { ...prev };
         const pivotX = (HOOK_CONFIG.pivotX / 100) * area.clientWidth;
         const pivotY = (HOOK_CONFIG.pivotY / 100) * area.clientHeight;
 
@@ -111,24 +116,25 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
         } else if (next.status === 'extending') {
           next.length += HOOK_CONFIG.extendSpeed;
 
+          // tip in px
           const ang = (next.angle * Math.PI) / 180;
           const tipX = pivotX + next.length * Math.sin(ang);
           const tipY = pivotY + next.length * Math.cos(ang);
 
-          // collision
+          // collision (only once)
           for (const it of items) {
             const ix = (it.x / 100) * area.clientWidth;
             const iy = (it.y / 100) * area.clientHeight;
             const dist = Math.hypot(tipX - ix, tipY - iy);
-            const hitRadius = Math.max(10, it.size * 0.55);
-            if (!next.caughtItem && dist < hitRadius) {
+            const hitR = Math.max(10, it.size * 0.55);
+            if (!next.caughtItem && dist < hitR) {
               next.caughtItem = it;
               next.status = 'retracting';
               break;
             }
           }
 
-          // bounds
+          // bounds -> retract
           if (
             tipX < 0 || tipX > area.clientWidth ||
             tipY > area.clientHeight ||
@@ -137,10 +143,10 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
             next.status = 'retracting';
           }
         } else if (next.status === 'retracting') {
-          const retract = next.caughtItem
+          const speed = next.caughtItem
             ? Math.max(1, HOOK_CONFIG.baseRetractSpeed - next.caughtItem.points / 10)
             : HOOK_CONFIG.baseRetractSpeed * 1.5;
-          next.length -= retract;
+          next.length -= speed;
 
           if (next.length <= HOOK_CONFIG.baseLength) {
             next.length = HOOK_CONFIG.baseLength;
@@ -151,17 +157,16 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
         return next;
       });
 
-      raf.current = requestAnimationFrame(tick);
+      rafRef.current = requestAnimationFrame(step);
     };
 
-    raf.current = requestAnimationFrame(tick);
-    return () => { if (raf.current) cancelAnimationFrame(raf.current); };
+    rafRef.current = requestAnimationFrame(step);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [items]);
 
   return (
-    <div ref={gameAreaRef} className="w-full h-full relative text-white">
-
-      {/* Top Bar */}
+    <div ref={areaRef} className="w-full h-full relative text-white">
+      {/* HUD */}
       <div
         className="absolute top-0 left-0 w-full p-4 flex justify-between text-2xl z-20 bg-black/20"
         style={{ textShadow: '2px 2px #000' }}
@@ -170,7 +175,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
         <div>Score: <span className="text-yellow-300">{score}</span></div>
       </div>
 
-      {/* Miner (pivot visual) */}
+      {/* Pivot visual */}
       <div
         className="absolute top-0 w-24 h-24 bg-gray-700 border-4 border-black/60 rounded-b-2xl"
         style={{
@@ -181,8 +186,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
         <div className="w-8 h-8 bg-yellow-500 rounded-full absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
       </div>
 
-      {/* === HOOK GROUP (ONLY RENDER HERE) ===
-          Dây, cuốc, và item bị gắp đều trong cùng 1 nhóm xoay/thu kéo */}
+      {/* ======= ONLY ROPE GROUP (the single source of truth) ======= */}
       <div
         className="absolute z-30"
         style={{
@@ -206,7 +210,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
           }}
         />
 
-        {/* Pickaxe at rope tip (rotate head downward) */}
+        {/* Pickaxe at tip (head down) */}
         <div
           className="absolute text-3xl select-none"
           style={{
@@ -218,7 +222,7 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
           ⛏️
         </div>
 
-        {/* Caught item attached to tip */}
+        {/* Caught item (attached to tip) */}
         {hook.caughtItem && (
           <div
             className="absolute z-30"
@@ -238,29 +242,30 @@ const GameScreen: React.FC<GameScreenProps> = ({ onEndGame }) => {
           </div>
         )}
       </div>
+      {/* ======= END ONLY ROPE GROUP ======= */}
 
-      {/* Items (ẩn item đang bị kéo) */}
-      {items.map((item) => (
+      {/* Items (hide the one being carried) */}
+      {items.map((it) => (
         <div
-          key={item.id}
+          key={it.id}
           className="absolute"
           style={{
-            left: `${item.x}%`,
-            top: `${item.y}%`,
-            width: `${item.size}px`,
-            height: `${item.size}px`,
+            left: `${it.x}%`,
+            top: `${it.y}%`,
+            width: `${it.size}px`,
+            height: `${it.size}px`,
             transform: 'translate(-50%, -50%)',
-            visibility: hook.caughtItem?.id === item.id ? 'hidden' : 'visible',
+            visibility: hook.caughtItem?.id === it.id ? 'hidden' : 'visible',
           }}
         >
-          <img src={item.image} alt={item.name} className="w-full h-full object-contain" />
+          <img src={it.image} alt={it.name} className="w-full h-full object-contain" />
         </div>
       ))}
 
-      {/* Mobile Shoot Button */}
+      {/* Mobile button */}
       <button
-        onClick={shootHook}
-        onTouchStart={(e) => { e.preventDefault(); shootHook(); }}
+        onClick={shoot}
+        onTouchStart={(e) => { e.preventDefault(); shoot(); }}
         className="absolute bottom-4 right-4 md:hidden w-24 h-24 rounded-full bg-red-600 border-b-8 border-red-700 active:border-b-0 active:translate-y-2"
         disabled={hook.status !== 'swinging'}
       >
